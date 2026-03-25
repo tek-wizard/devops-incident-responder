@@ -1,0 +1,24 @@
+# openenv.yaml
+name: "devops-incident-responder"
+version: "1.0.0"
+description: "A real-world SRE simulator where agents diagnose and fix server outages."
+entry_point: "src.app:app"
+tags: ["devops", "sre", "troubleshooting", "real-world"]
+
+# Define the input/output schemas for the validator
+schema:
+  action: "IncidentAction"
+  observation: "SystemObservation"
+  state: "SystemState"
+
+# Define the tasks for the /tasks endpoint
+tasks:
+  - id: "service_restart"
+    difficulty: "easy"
+    description: "A critical API service has crashed and needs a restart."
+  - id: "memory_leak"
+    difficulty: "medium"
+    description: "Identify and kill a process leaking memory to restore latency."
+  - id: "db_connection_exhaustion"
+    difficulty: "hard"
+    description: "The connection pool is full. Scale the DB or clear idle connections."

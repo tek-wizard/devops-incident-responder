@@ -1,0 +1,26 @@
+[project]
+name = "devops-incident-responder"
+version = "1.0.0"
+description = "A real-world SRE simulator for AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.5.3",
+    "requests>=2.31.0",
+    "openai>=1.12.0",
+    "python-dotenv>=1.0.1",
+    "openenv-core"
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*"]
