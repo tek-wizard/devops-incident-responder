@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
-from .models import IncidentAction
+
+from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation
 from .environment import DevOpsEnv
 from .tasks import TASKS
 import uvicorn
@@ -28,11 +29,11 @@ def _normalize_action(action: IncidentAction) -> IncidentAction:
 
 
 @app.post("/reset")
-async def reset(task_id: str = "service_restart"):
+async def reset(task_id: str = "service_restart", seed: int | None = None):
     """Resets the environment to a specific task state."""
     if task_id not in TASKS:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'")
-    observation = env.reset(task_id=task_id)
+    observation = env.reset(task_id=task_id, seed=seed)
     return observation
 
 @app.post("/step")
@@ -62,6 +63,9 @@ async def get_tasks():
             for task in TASKS.values()
         ],
         "action_schema": IncidentAction.model_json_schema(),
+        "observation_schema": SystemObservation.model_json_schema(),
+        "reward_schema": RewardOutput.model_json_schema(),
+        "state_schema": EnvironmentState.model_json_schema(),
     }
 
 @app.get("/grader")
@@ -78,15 +82,19 @@ async def get_grader():
     score = max(0.0, score - (env.step_count * 0.05))
     return {"score": score}
 
+
+@app.get("/state")
+async def get_state():
+    """Returns the current environment state for debugging and validation."""
+    return env.state()
+
+
 @app.post("/baseline")
 async def run_baseline():
     """MANDATORY: Triggers the baseline inference script."""
-    return {
-        "results": [
-            {"task_id": task["id"], "score": 0.0}
-            for task in TASKS.values()
-        ]
-    }
+    from scripts.baseline import run_all_tasks
+
+    return {"results": run_all_tasks()}
 
 def main():
     """The entry point for the OpenEnv validator and deployment."""

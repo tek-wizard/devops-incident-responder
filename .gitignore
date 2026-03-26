@@ -41,3 +41,6 @@ wheels/
 /server
 *.o
 *.so
+
+# testing folders
+testing

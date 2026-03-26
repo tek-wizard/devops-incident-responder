@@ -1,27 +1,38 @@
 import json
+import os
+import re
 from typing import Any
 
 import requests
+from openai import OpenAI
 
-BASE_URL = "http://localhost:7860"
+# These will be set by the Judges' environment
+BASE_URL = os.getenv("DEVOPS_ENV_BASE_URL", "http://localhost:7860")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEFAULT_SEED = int(os.getenv("BASELINE_SEED", "7"))
 
+def _build_client() -> OpenAI | None:
+    # Judges will provide the OPENAI_API_KEY
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("Error: OPENAI_API_KEY not found in environment variables.")
+        return None
+    return OpenAI(api_key=api_key)
 
 def _logs_contain(observation: dict[str, Any], needle: str) -> bool:
     return any(needle in line for line in observation.get("logs", []))
-
 
 def _latest_warn(observation: dict[str, Any]) -> str | None:
     warn_lines = [line for line in observation.get("logs", []) if "[WARN]" in line]
     return warn_lines[-1] if warn_lines else None
 
-
-def get_action_from_llm(
+def _mock_action(
     observation: dict[str, Any],
     task_id: str,
     history: list[dict[str, str]],
     pending_retry: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Mock policy for local testing without external LLM calls."""
+    """Fallback logic if the LLM fails or returns garbage."""
     if pending_retry is not None:
         return pending_retry
 
@@ -33,55 +44,98 @@ def get_action_from_llm(
         return {"command": "restart_service", "target": "auth-api"}
 
     if task_id == "memory_leak":
-        leak_cleared = (
-            _logs_contain(observation, "Leaking worker process terminated")
-            or any(action["command"] == "kill_process" for action in history)
-            and metrics.get("memory_usage", 1.0) < 0.60
-        )
-        if leak_cleared:
+        if _logs_contain(observation, "Leaking worker process terminated"):
             return {"command": "restart_service", "target": "auth-api"}
-
-        if (
-            "worker-process" in logs_blob
-            or "OOM" in logs_blob
-            or metrics.get("memory_usage", 0.0) > 0.85
-        ):
+        if "worker-process" in logs_blob or metrics.get("memory_usage", 0.0) > 0.85:
             return {"command": "kill_process", "target": "auth-api"}
 
-        return {"command": "get_logs", "target": "system"}
-
     if task_id == "db_connection_exhaustion":
-        db_scaled = (
-            _logs_contain(observation, "Database pool capacity scaled out")
-            or any(action["command"] == "scale_db" for action in history)
-            and metrics.get("latency", 1.0) < 0.60
-        )
-        if db_scaled:
+        if _logs_contain(observation, "Database pool capacity scaled out"):
             return {"command": "clear_connections", "target": "main-db"}
-
-        if metrics.get("latency", 0.0) > 0.40 or metrics.get("error_rate", 0.0) > 0.10:
+        if metrics.get("latency", 0.0) > 0.40:
             return {"command": "scale_db", "target": "main-db"}
-
-        return {"command": "check_metrics", "target": "main-db"}
 
     return {"command": "get_logs", "target": "system"}
 
+def _llm_action(
+    client: OpenAI,
+    observation: dict[str, Any],
+    task_id: str,
+    history: list[dict[str, str]],
+    pending_retry: dict[str, str] | None = None,
+) -> dict[str, str]:
+    if pending_retry is not None:
+        return pending_retry
 
-def run_task(task_id: str) -> float:
+    prompt = f"""
+You are a senior SRE responding to a DevOps incident.
+
+Choose exactly one action:
+- command: restart_service | kill_process | scale_db | clear_connections | get_logs | check_metrics
+- target: auth-api | main-db | system
+
+Task id: {task_id}
+History: {json.dumps(history[-4:])}
+Observation: {json.dumps(observation)}
+
+Rules:
+- Solve the incident in the minimum number of steps.
+- Use 'get_logs' or 'check_metrics' if the current state is unclear.
+- Return ONLY valid JSON.
+- Do NOT include explanations, text, or markdown.
+
+Valid format:
+{{"command": "restart_service", "target": "auth-api"}}
+""".strip()
+
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        content = response.choices[0].message.content.strip()
+
+        # Robust Parsing: Handle markdown if the model doesn't respect response_format
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            content = match.group(0)
+        
+        parsed = json.loads(content)
+        return {
+            "command": parsed.get("command", "get_logs"),
+            "target": parsed.get("target", "system"),
+        }
+    except Exception as e:
+        print(f"LLM Action Error: {e}. Falling back to mock policy.")
+        return _mock_action(observation, task_id, history, pending_retry)
+
+def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = None) -> float:
     print(f"Starting task: {task_id}")
-    observation = requests.post(f"{BASE_URL}/reset", params={"task_id": task_id}, timeout=10).json()
-    history: list[dict[str, str]] = []
-    pending_retry: dict[str, str] | None = None
+    observation = requests.post(
+        f"{BASE_URL}/reset",
+        params={"task_id": task_id, "seed": seed},
+        timeout=15,
+    ).json()
+    
+    history = []
+    pending_retry = None
 
-    for step in range(10):
-        action = get_action_from_llm(observation, task_id, history, pending_retry)
-        print(f"Step {step}: {action['command']} -> {action['target']}")
+    for step in range(15):
+        if client:
+            action = _llm_action(client, observation, task_id, history, pending_retry)
+        else:
+            action = _mock_action(observation, task_id, history, pending_retry)
+            
+        print(f"  Step {step}: {action['command']} -> {action['target']}")
 
         history.append(action)
-        step_response = requests.post(f"{BASE_URL}/step", json=action, timeout=10).json()
+        step_response = requests.post(f"{BASE_URL}/step", json=action, timeout=15).json()
         observation = step_response["observation"]
         done = step_response["done"]
 
+        # Transient Failure Retry Logic
         warn_line = _latest_warn(observation)
         if warn_line and "did not stick due to transient control-plane failure" in warn_line:
             pending_retry = action
@@ -91,15 +145,24 @@ def run_task(task_id: str) -> float:
         if done:
             break
 
-    final_score = requests.get(f"{BASE_URL}/grader", timeout=10).json()["score"]
+    final_score = requests.get(f"{BASE_URL}/grader", timeout=15).json()["score"]
     print(f"Completed task: {task_id} score={final_score}")
     return final_score
 
+def run_all_tasks(seed: int = DEFAULT_SEED):
+    client = _build_client()
+    try:
+        task_response = requests.get(f"{BASE_URL}/tasks", timeout=15).json()
+        task_ids = [task["id"] for task in task_response["tasks"]]
+    except:
+        task_ids = ["service_restart", "memory_leak", "db_connection_exhaustion"]
+
+    return [
+        {"task_id": task_id, "score": run_task(task_id, seed=seed, client=client)}
+        for task_id in task_ids
+    ]
 
 if __name__ == "__main__":
-    task_response = requests.get(f"{BASE_URL}/tasks", timeout=10).json()
-    task_ids = [task["id"] for task in task_response["tasks"]]
-
-    results = {task_id: run_task(task_id) for task_id in task_ids}
+    results = run_all_tasks()
     print("\nFINAL BASELINE SCORES:")
     print(json.dumps(results, indent=2))
