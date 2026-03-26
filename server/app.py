@@ -86,7 +86,7 @@ async def get_grader():
 @app.get("/state")
 async def get_state():
     """Returns the current environment state for debugging and validation."""
-    return env.state()
+    return env.state
 
 
 @app.post("/baseline")
