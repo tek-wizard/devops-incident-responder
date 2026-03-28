@@ -38,6 +38,7 @@ wheels/
 .DS_Store
 
 # Compiled C++ (If you have local binaries)
+# /server
 *.o
 *.so
 

@@ -6,16 +6,19 @@ from typing import Any
 import requests
 from openai import OpenAI
 
-BASE_URL = os.getenv("DEVOPS_ENV_BASE_URL", "https://tek-wizard-devops-incident-responder.hf.space")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+# INTERNAL CONFIG
+ENV_URL = os.getenv("DEVOPS_ENV_BASE_URL", "http://localhost:7860")
 DEFAULT_SEED = int(os.getenv("BASELINE_SEED", "7"))
 
 def _build_client() -> OpenAI | None:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY not found in environment variables.")
+    if not API_KEY:
+        print("Error: API Key (HF_TOKEN or OPENAI_API_KEY) not found.")
         return None
-    return OpenAI(api_key=api_key)
+    return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 def _logs_contain(observation: dict[str, Any], needle: str) -> bool:
     return any(needle in line for line in observation.get("logs", []))
@@ -88,14 +91,14 @@ Valid format:
 
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0,
         )
         content = response.choices[0].message.content.strip()
 
-        # Robust Parsing: Handle markdown if the model doesn't respect response_format
+        # Robust Parsing
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:
             content = match.group(0)
@@ -112,7 +115,7 @@ Valid format:
 def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = None) -> float:
     print(f"Starting task: {task_id}")
     observation = requests.post(
-        f"{BASE_URL}/reset",
+        f"{ENV_URL}/reset",
         params={"task_id": task_id, "seed": seed},
         timeout=15,
     ).json()
@@ -120,7 +123,7 @@ def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = Non
     history = []
     pending_retry = None
 
-    for step in range(15):
+    for step in range(20):
         if client:
             action = _llm_action(client, observation, task_id, history, pending_retry)
         else:
@@ -129,7 +132,7 @@ def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = Non
         print(f"  Step {step}: {action['command']} -> {action['target']}")
 
         history.append(action)
-        step_response = requests.post(f"{BASE_URL}/step", json=action, timeout=15).json()
+        step_response = requests.post(f"{ENV_URL}/step", json=action, timeout=15).json()
         observation = step_response["observation"]
         done = step_response["done"]
 
@@ -143,24 +146,26 @@ def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = Non
         if done:
             break
 
-    final_score = requests.get(f"{BASE_URL}/grader", timeout=15).json()["score"]
+    final_score = requests.get(f"{ENV_URL}/grader", timeout=15).json()["score"]
     print(f"Completed task: {task_id} score={final_score}")
     return final_score
 
-def run_all_tasks(seed: int = DEFAULT_SEED):
+def main():
     client = _build_client()
     try:
-        task_response = requests.get(f"{BASE_URL}/tasks", timeout=15).json()
+        task_response = requests.get(f"{ENV_URL}/tasks", timeout=15).json()
         task_ids = [task["id"] for task in task_response["tasks"]]
-    except:
+    except Exception as e:
+        print(f"Could not fetch tasks: {e}")
         task_ids = ["service_restart", "memory_leak", "db_connection_exhaustion"]
 
-    return [
-        {"task_id": task_id, "score": run_task(task_id, seed=seed, client=client)}
-        for task_id in task_ids
-    ]
+    results = []
+    for tid in task_ids:
+        score = run_task(tid, seed=DEFAULT_SEED, client=client)
+        results.append({"task_id": tid, "score": score})
 
-if __name__ == "__main__":
-    results = run_all_tasks()
     print("\nFINAL BASELINE SCORES:")
     print(json.dumps(results, indent=2))
+
+if __name__ == "__main__":
+    main()

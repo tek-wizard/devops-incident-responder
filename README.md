@@ -72,11 +72,11 @@ To simulate real-world distributed systems, we introduce controlled uncertainty:
 
 ## 📊 Task Difficulty Progression  
 
-| Task ID                     | Difficulty | Primary Challenge      | Causal Chain        |
-|---------------------------|------------|------------------------|---------------------|
-| service_restart           | Easy       | Process Crash          | Restart             |
-| memory_leak               | Medium     | Zombie Processes       | Kill ➔ Restart      |
-| db_connection_exhaustion  | Hard       | Resource Saturation    | Scale ➔ Clear       |
+| Task ID                     | Difficulty | Primary Challenge        | Environmental Hurdles                                                                 | Causal Chain           |
+|----------------------------|------------|--------------------------|----------------------------------------------------------------------------------------|------------------------|
+| service_restart            | Easy       | Process Crash            | 10% Flakiness: Tests basic resilience and retry logic                                  | Restart                |
+| memory_leak                | Medium     | Zombie Processes         | 50% Noise + 15% Flakiness: Agent must filter logs to find the OOM signal              | Kill ➔ Restart         |
+| db_connection_exhaustion   | Hard       | Resource Saturation      | 80% Noise + 20% Flakiness: High-entropy "Hard" mode requiring strict causal ordering  | Scale ➔ Clear          |
 
 ---
 
@@ -101,12 +101,21 @@ This project is fully compliant with the OpenEnv Specification:
 └── Dockerfile # Deployment
 ```
 
-## 📝 Evaluation Logic  
+## Grader Scoring Calibration
 
-The `/grader` endpoint computes the final score based on cumulative reward:
+The `/grader` endpoint computes the final score based on the **cumulative reward trajectory**.  
+Because the environment includes **Step Penalties** and **Transient Failures**, scores are interpreted as follows:
 
-- **0.85 – 1.0:** Optimal resolution with minimal retries  
-- **0.6 – 0.8:** Correct but inefficient  
-- **< 0.5:** Failed to resolve within step limit  
+### Score Ranges
 
----
+- **0.80 – 1.00 (Elite)**  
+  Near-optimal resolution.  
+  The agent correctly identified the root cause and handled flakiness with immediate retries.
+
+- **0.40 – 0.79 (Proficient)**  
+  Successful but Sub-Optimal.   
+  The agent may have explored incorrect paths or been slowed down by high telemetry noise, but ultimately restored the system.
+
+- **< 0.4 ((Sub-Threshold / Exhausted))**  
+  Incomplete Recovery   
+  The agent either exhausted the `max_steps` budget before resolving the incident or accumulated excessive penalties through redundant and irrelevant actions.

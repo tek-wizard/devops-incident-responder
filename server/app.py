@@ -7,7 +7,6 @@ import uvicorn
 
 app = FastAPI(title="DevOps Incident Responder")
 
-# We keep one global instance of the environment for simplicity in this hackathon
 env = DevOpsEnv()
 
 @app.get("/")
