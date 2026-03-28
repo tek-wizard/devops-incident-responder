@@ -27,6 +27,12 @@ def _latest_warn(observation: dict[str, Any]) -> str | None:
     warn_lines = [line for line in observation.get("logs", []) if "[WARN]" in line]
     return warn_lines[-1] if warn_lines else None
 
+
+def _extract_grade(grader_response: dict[str, Any]) -> float:
+    if "score" in grader_response:
+        return float(grader_response["score"])
+    raise ValueError(f"Unexpected grader response: {grader_response}")
+
 def _mock_action(
     observation: dict[str, Any],
     task_id: str,
@@ -82,6 +88,11 @@ Observation: {json.dumps(observation)}
 Rules:
 - Solve the incident in the minimum number of steps.
 - Use 'get_logs' or 'check_metrics' if the current state is unclear.
+- Think like an SRE:
+  - prefer diagnosing the bottleneck before applying a fix
+  - infrastructure capacity issues should usually be addressed before clearing downstream symptoms
+  - if an action fails due to a transient control-plane issue, retry the same corrective action
+  - avoid unrelated restarts when the logs and metrics point to a database or worker bottleneck
 - Return ONLY valid JSON.
 - Do NOT include explanations, text, or markdown.
 
@@ -146,7 +157,7 @@ def run_task(task_id: str, seed: int = DEFAULT_SEED, client: OpenAI | None = Non
         if done:
             break
 
-    final_score = requests.get(f"{ENV_URL}/grader", timeout=15).json()["score"]
+    final_score = _extract_grade(requests.get(f"{ENV_URL}/grader", timeout=15).json())
     print(f"Completed task: {task_id} score={final_score}")
     return final_score
 
@@ -166,6 +177,7 @@ def main():
 
     print("\nFINAL BASELINE SCORES:")
     print(json.dumps(results, indent=2))
+    return results
 
 if __name__ == "__main__":
     main()

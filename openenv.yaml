@@ -7,7 +7,9 @@ tags: ["devops", "sre", "troubleshooting", "real-world"]
 schema:
   action: "server.models:IncidentAction"
   observation: "server.models:SystemObservation"
-  state: "server.models:SystemState"
+  reward: "server.models:RewardOutput"
+  state: "server.models:EnvironmentState"
+  grader: "server.models:TaskGrade"
 
 tasks:
   - id: "service_restart"

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
-from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation
+from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation, TaskGrade
 from .environment import DevOpsEnv
 from .tasks import TASKS
 import uvicorn
@@ -65,21 +66,13 @@ async def get_tasks():
         "observation_schema": SystemObservation.model_json_schema(),
         "reward_schema": RewardOutput.model_json_schema(),
         "state_schema": EnvironmentState.model_json_schema(),
+        "grader_schema": TaskGrade.model_json_schema(),
     }
 
 @app.get("/grader")
 async def get_grader():
     """MANDATORY: Returns the final score (0.0-1.0) after an episode."""
-    task = TASKS[env.task_id]
-    nominal = task["nominal_metrics"]
-    resolved = (
-        env.metrics["error_rate"] <= nominal["error_rate"] + 0.01
-        and env.metrics["latency"] <= nominal["latency"] + 0.02
-        and env.progress_index >= len(env.required_sequence)
-    )
-    score = 1.0 if resolved else 0.0
-    score = max(0.0, score - (env.step_count * 0.05))
-    return {"score": score}
+    return env.grade()
 
 
 @app.get("/state")
@@ -93,11 +86,12 @@ async def run_baseline():
     """MANDATORY: Triggers the baseline inference script."""
     from scripts.baseline import run_all_tasks
 
-    return {"results": run_all_tasks()}
+    results = await run_in_threadpool(run_all_tasks)
+    return {"results": results}
 
 def main():
     """The entry point for the OpenEnv validator and deployment."""
-    uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=True)
+    uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
 
 if __name__ == "__main__":
     main()

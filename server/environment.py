@@ -1,8 +1,8 @@
 import random
 from copy import deepcopy
 
-from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation, SystemState
-from .tasks import TASKS
+from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation, SystemState, TaskGrade
+from .tasks import TASKS, TASK_GRADERS
 
 
 class DevOpsEnv:
@@ -49,6 +49,8 @@ class DevOpsEnv:
         self.done = False
         self.last_info = {}
         self.last_reward = RewardOutput(value=0.0, reason="environment_reset", done=False)
+        self.reward_history: list[RewardOutput] = []
+        self.cumulative_reward = 0.0
         self.random = random.Random(seed) if seed is not None else random.Random()
         self.seed = seed
 
@@ -66,6 +68,7 @@ class DevOpsEnv:
         )
 
         self.required_sequence = list(self.task["required_sequence"])
+        self.completed_steps: list[str] = []
         self.progress_index = 0
         self.partial_reward_given = False
         self.flakiness_rate = self.random.uniform(*self.task["flakiness_range"])
@@ -137,6 +140,7 @@ class DevOpsEnv:
             self.logs.append("Database connections cleared after capacity increase. Pool recovered.")
 
         self.progress_index += 1
+        self.completed_steps.append(expected_step)
         return self._grant_partial_reward_if_needed()
 
     def _handle_inspection_action(self, action: IncidentAction):
@@ -296,7 +300,25 @@ class DevOpsEnv:
         self.done = done
         self.last_info = info
         self.last_reward = RewardOutput(value=reward_value, reason=reward_reason, done=done)
-        return self._get_obs(), reward_value, done, info
+        self.reward_history.append(self.last_reward)
+        self.cumulative_reward = round(self.cumulative_reward + reward_value, 2)
+        return self._get_obs(), self.last_reward, done, info
+
+    def grade(self) -> TaskGrade:
+        grader = TASK_GRADERS[self.task_id]
+        grade = grader(self)
+        return TaskGrade(
+            task_id=self.task_id,
+            score=grade["score"],
+            resolved=grade["resolved"],
+            max_steps=grade["max_steps"],
+            steps_taken=grade["steps_taken"],
+            progress_ratio=grade["progress_ratio"],
+            reward_total=grade["reward_total"],
+            expected_sequence=grade["expected_sequence"],
+            completed_steps=grade["completed_steps"],
+            notes=grade["notes"],
+        )
 
     @property
     def state(self):
@@ -307,7 +329,10 @@ class DevOpsEnv:
             hidden_state=self.hidden_state,
             progress_index=self.progress_index,
             required_sequence=self.required_sequence,
+            completed_steps=self.completed_steps,
             flakiness_rate=round(self.flakiness_rate, 4),
+            cumulative_reward=round(self.cumulative_reward, 2),
+            reward_history=self.reward_history,
             done=self.done,
             info=self.last_info,
         )

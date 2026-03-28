@@ -1,3 +1,73 @@
+from typing import Any
+
+
+TASK_SCORE_DIVISORS = {
+    "service_restart": 1.0,
+    "memory_leak": 1.5,
+    "db_connection_exhaustion": 2.0,
+}
+
+
+def _base_grade(env: Any) -> dict[str, Any]:
+    max_steps = env.task.get("max_steps", 15)
+    progress_ratio = round(env.progress_index / len(env.required_sequence), 4)
+    resolved = env._is_resolved()
+    divisor = TASK_SCORE_DIVISORS[env.task_id]
+    raw_score = env.cumulative_reward / divisor
+    score = max(0.0, min(1.0, raw_score))
+    if not resolved:
+        score = min(score, 0.4)
+    score = round(score, 4)
+
+    notes = []
+    if resolved:
+        notes.append("Incident resolved and nominal metrics restored.")
+    elif env.progress_index > 0:
+        notes.append("Partial remediation achieved but the episode ended before recovery.")
+    if any(item.value < 0 for item in env.reward_history):
+        notes.append("Negative rewards recorded for inefficient or incorrect actions.")
+    notes.append(
+        f"Penalty-driven score derived from cumulative_reward={env.cumulative_reward:.2f} using divisor={divisor:.2f}."
+    )
+
+    return {
+        "score": score,
+        "resolved": resolved,
+        "max_steps": max_steps,
+        "steps_taken": env.step_count,
+        "progress_ratio": progress_ratio,
+        "reward_total": round(env.cumulative_reward, 2),
+        "expected_sequence": env.required_sequence,
+        "completed_steps": env.completed_steps,
+        "notes": notes,
+    }
+
+
+def grade_service_restart(env: Any) -> dict[str, Any]:
+    return _base_grade(env)
+
+
+def grade_memory_leak(env: Any) -> dict[str, Any]:
+    result = _base_grade(env)
+    if "kill_process" not in env.completed_steps:
+        result["notes"].append("Root-cause worker termination was not completed.")
+    return result
+
+
+def grade_db_connection_exhaustion(env: Any) -> dict[str, Any]:
+    result = _base_grade(env)
+    if env.completed_steps[:1] != ["scale_db"] and env.progress_index > 0:
+        result["notes"].append("Database scaling must precede connection clearing.")
+    return result
+
+
+TASK_GRADERS = {
+    "service_restart": grade_service_restart,
+    "memory_leak": grade_memory_leak,
+    "db_connection_exhaustion": grade_db_connection_exhaustion,
+}
+
+
 TASKS = {
     "service_restart": {
         "id": "service_restart",
