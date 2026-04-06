@@ -97,9 +97,9 @@ class DevOpsEnv:
 
     def _is_correct_action(self, action: IncidentAction, expected_step: str | None):
         if expected_step == "restart_service":
-            return action.command == "restart" and action.target == "auth-api"
+            return action.command in {"restart", "restart_service"} and action.target == "auth-api"
         if expected_step == "kill_process":
-            return action.command == "kill_process"
+            return action.command == "kill_process" and action.target == "auth-api"
         if expected_step == "scale_db":
             return action.command in {"scale_db", "scale"} and action.target == "main-db"
         if expected_step == "clear_connections":
@@ -267,6 +267,16 @@ class DevOpsEnv:
         return self.progress_index == len(self.required_sequence)
 
     def step(self, action: IncidentAction):
+        if self.done:
+            info = dict(self.last_info)
+            info["last_action_error"] = "episode_already_done"
+            return (
+                self._get_obs(),
+                RewardOutput(value=0.0, reason="episode_already_done", done=True),
+                True,
+                info,
+            )
+
         self.step_count += 1
         reward = self.STEP_PENALTY
         max_steps = self.task.get("max_steps", 15)

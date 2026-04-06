@@ -15,6 +15,11 @@ async def root():
     return {"message": "DevOps Incident Responder OpenEnv is running", "status": "200"}
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 def _normalize_action(action: IncidentAction) -> IncidentAction:
     command_aliases = {
         "restart_service": "restart",

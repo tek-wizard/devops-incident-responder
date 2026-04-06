@@ -219,7 +219,7 @@ The required root-level script is [inference.py](/home/prateeksingh/Desktop/devo
 - falls back to a deterministic heuristic policy only if no model credentials are present
 - runs all tasks with a fixed default seed
 
-The baseline is intentionally not hardcoded per task. It must reason from the current observation, which keeps the benchmark honest and leaves headroom for stronger agents.
+The primary benchmark path is observation-driven and uses the OpenAI client with the configured model. The fallback path is a deterministic, task-aware heuristic so local validation can still complete without external model access.
 
 Required environment variables:
 
@@ -240,17 +240,17 @@ Two baseline modes are available:
 - LLM baseline: observation-driven policy using the OpenAI client and the configured model
 - fallback baseline: deterministic heuristic policy used only when no API credentials are set
 
-Example LLM baseline run with `BASELINE_SEED=7` and `MODEL_NAME="openai/gpt-oss-120b:groq"`:
+Documented reproducible baseline with `BASELINE_SEED=7`:
 
 | Task | Score |
 |---|---:|
-| `service_restart` | `0.9000` |
-| `memory_leak` | `0.7000` |
-| `db_connection_exhaustion` | `0.6250` |
+| `service_restart` | `0.850` |
+| `memory_leak` | `0.933` |
+| `db_connection_exhaustion` | `0.700` |
 
-These results are intentionally non-perfect. In particular, the hard task is designed to remain difficult under noisy telemetry and causal dependencies, so a modest baseline score is evidence that the environment is not trivially solved.
+These results come from the deterministic fallback policy and are reproducible for the same seed. When `HF_TOKEN` is set, the script still uses the OpenAI client for the primary evaluation path.
 
-If you omit `HF_TOKEN`, the fallback heuristic policy will produce a deterministic score profile for the same seed, but the primary benchmark path is the LLM-driven baseline above.
+The hard task remains intentionally non-perfect even under the deterministic policy, which helps preserve headroom for stronger agents.
 
 ## Setup
 
@@ -309,6 +309,8 @@ To run the deterministic fallback policy without an LLM, omit `HF_TOKEN`.
 
 This repository is designed for a Docker-based Hugging Face Space and the README frontmatter includes the `openenv` tag required by the hackathon.
 
+Use the Space runtime URL for validator pings, not the repository page URL. The validator expects a `https://<space-name>.hf.space` endpoint that responds to `POST /reset`.
+
 ## Validation Checklist
 
 Before submission, verify:
@@ -318,6 +320,7 @@ docker build -t devops-incident-responder .
 docker run --rm -p 7860:7860 devops-incident-responder
 python3 inference.py
 openenv validate
+./val.sh https://<your-space>.hf.space .
 ```
 
 ## Project Structure
