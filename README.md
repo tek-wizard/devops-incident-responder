@@ -7,61 +7,86 @@ tags:
   - openenv
   - devops
   - evaluation
+  - sre
 pinned: false
 ---
 
 # DevOps Incident Responder
 
-DevOps Incident Responder is an OpenEnv-compatible environment for evaluating agents on a real SRE workflow: incident triage and remediation in a small production microservice stack. The agent reads recent logs, service health, and system metrics, then issues operational actions such as restarting a crashed API, killing a leaking worker, scaling a degraded database, or clearing stale connections.
+DevOps Incident Responder is a real-world OpenEnv benchmark for incident triage and remediation in a small production microservice stack. The agent reads logs, service health, and system metrics, then chooses operational actions such as restarting a crashed API, killing a leaking worker, scaling a degraded database, or clearing stale connections.
 
-This is not a game or toy domain. It models a task a human on-call engineer actually performs: diagnosing outages under noisy telemetry and occasional control-plane flakiness.
+This environment is built for the kind of work human on-call engineers actually do: diagnose noisy telemetry, pick safe remediation steps, recover service quickly, and avoid thrashing the system with incorrect actions.
 
-## Motivation
+## Why This Benchmark Matters
 
-Most agent benchmarks over-index on browsing or synthetic planning tasks. This environment targets operational reliability work instead:
+Many agent benchmarks test browsing, chat, or synthetic workflows. Real production operations are different:
 
-- reading noisy but meaningful observability signals
-- choosing safe remediation actions
-- respecting causal ordering in multi-step recoveries
-- handling transient failure without thrashing
+- the signal is incomplete and noisy
+- the correct fix often depends on action ordering
+- transient control-plane failure makes retry logic important
+- good agents should get partial credit for progress, not just a binary pass/fail
+
+This benchmark targets that gap with a compact but realistic SRE loop.
+
+## Round 1 Fit
+
+This submission is designed to match the hackathon checklist directly:
+
+- real-world task simulation: on-call DevOps / SRE incident response
+- full OpenEnv interface: typed `Action`, `Observation`, `Reward`, `State`, and grader models
+- required API surface: `reset()`, `step()`, `state()`
+- metadata in [`openenv.yaml`](openenv.yaml)
+- three graded tasks with easy -> medium -> hard progression
+- dense reward shaping with partial progress and penalties
+- root-level [`inference.py`](inference.py) using the OpenAI client
+- Docker-based deployment for Hugging Face Spaces
+- reproducible validator and usage instructions
 
 ## Environment Overview
 
 The simulated system contains three services:
 
-- `auth-api`: customer-facing API
-- `main-db`: primary database
-- `cache`: healthy supporting service
+| Service | Role | Typical Failure Mode |
+|---|---|---|
+| `auth-api` | Customer-facing API | Crash, degraded request handling |
+| `main-db` | Primary database | Pool exhaustion, stale connections |
+| `cache` | Supporting service | Healthy background dependency |
 
-Each episode loads one incident scenario, exposes the current observable system state, and ends when the incident is resolved or the task step budget is exhausted.
+Each episode loads one incident scenario. The agent sees only observable state and must recover the system before the step budget expires.
 
 ## OpenEnv Interface
 
-The environment implements the required OpenEnv surface:
+The environment exposes the required OpenEnv surface:
 
-- `POST /reset?task_id=<id>&seed=<int>` returns the initial typed observation
-- `POST /step` accepts a typed action and returns `observation`, typed `reward`, `done`, and `info`
-- `GET /state` returns the full typed environment state
-- `GET /tasks` lists tasks plus JSON schemas for action, observation, reward, state, and grader
-- `GET /grader` returns the deterministic typed grade for the current task run
+- `POST /reset?task_id=<id>&seed=<int>` -> typed initial observation
+- `POST /step` -> typed `observation`, typed `reward`, `done`, `info`
+- `GET /state` -> typed full environment state
+- `GET /tasks` -> task metadata plus schemas
+- `GET /grader` -> deterministic typed grade for the current run
+- `POST /baseline` -> triggers the packaged baseline runner
 
-Metadata is defined in [openenv.yaml](/home/prateeksingh/Desktop/devops_responder/openenv.yaml).
+Implementation entrypoints:
+
+- metadata: [`openenv.yaml`](openenv.yaml)
+- API app: [`server/app.py`](server/app.py)
+- environment logic: [`server/environment.py`](server/environment.py)
+- task definitions and graders: [`server/tasks.py`](server/tasks.py)
 
 ## Action Space
 
 Typed action model: `IncidentAction`
 
-Fields:
-
-- `command: str`
-- `target: str`
-- `params: Optional[Dict[str, str]]`
+| Field | Type | Meaning |
+|---|---|---|
+| `command` | `str` | The operation the agent wants to execute |
+| `target` | `str` | The service or system target |
+| `params` | `Optional[Dict[str, str]]` | Reserved for future control parameters |
 
 Supported commands:
 
-- `restart_service` or `restart`
+- `restart_service` / `restart`
 - `kill_process`
-- `scale_db` or `scale`
+- `scale_db` / `scale`
 - `clear_connections`
 - `get_logs`
 - `check_metrics`
@@ -72,16 +97,23 @@ Supported targets:
 - `main-db`
 - `system`
 
+Design note:
+
+- the action space is intentionally narrow and operationally safe
+- wrong targets are penalized
+- out-of-order actions are penalized
+- actions after episode completion no longer generate reward
+
 ## Observation Space
 
 Typed observation model: `SystemObservation`
 
-Fields:
-
-- `logs: List[str]`
-- `metrics: Dict[str, float]`
-- `service_status: Dict[str, str]`
-- `step_count: int`
+| Field | Type | Meaning |
+|---|---|---|
+| `logs` | `List[str]` | Most recent operational logs |
+| `metrics` | `Dict[str, float]` | Observable system metrics |
+| `service_status` | `Dict[str, str]` | Current service health labels |
+| `step_count` | `int` | Number of steps taken in the episode |
 
 Example metrics:
 
@@ -90,105 +122,65 @@ Example metrics:
 - `latency`
 - `error_rate`
 
-## Reward Model
-
-Typed reward model: `RewardOutput`
-
-Fields:
-
-- `value: float`
-- `reason: str`
-- `done: bool`
-
-Reward shaping is dense rather than binary:
-
-- `-0.05` base step penalty on every action
-- `+0.50` partial progress when the first required remediation step in a multi-step task succeeds
-- `+1.00` final recovery bonus when the incident is fully resolved
-- `-0.20` penalty for incorrect or out-of-order actions
-- `0.00` net action reward for inspections such as `get_logs` and `check_metrics` before the step penalty
-
-This gives agents trajectory-level signal instead of only terminal success/failure.
-
-The same trajectory is also exposed to the grader through `cumulative_reward`, so inefficiency and mistakes remain visible in the final task score.
-
-## State Model
+## State Space
 
 Typed state model: `EnvironmentState`
 
-Fields include:
+The state endpoint includes the observation plus hidden grader-facing state:
 
 - current observation
-- hidden system state used by graders
-- required sequence
+- active incidents
+- internal error state
+- required remediation sequence
 - completed steps
-- cumulative reward
 - reward history
+- cumulative reward
 - flakiness rate
-- episode completion flag
+- done flag
+- last step info
 
-## Tasks
+This separation lets agents act from partial observability while graders still score deterministically.
 
-The environment ships with three deterministic, programmatic task graders and a clear difficulty progression.
+## Reward Design
 
-### 1. `service_restart` (easy)
+Typed reward model: `RewardOutput`
 
-Objective:
-Restart a crashed `auth-api` service.
+| Signal | Value | Purpose |
+|---|---:|---|
+| base step cost | `-0.05` | discourages looping and unnecessary actions |
+| partial progress | `+0.50` | rewards correct first-step remediation in multi-step tasks |
+| final recovery bonus | `+1.00` | rewards successful incident resolution |
+| incorrect or out-of-order action | `-0.20` | penalizes unsafe or irrelevant behavior |
+| inspection actions | `0.00` before step cost | allows diagnosis without hidden bonus hacking |
 
-Expected remediation:
+Why this works:
 
-- `restart_service` on `auth-api`
+- agents get trajectory-level signal instead of a sparse terminal-only reward
+- graders inherit the same economics through `cumulative_reward`
+- successful but inefficient runs score lower than clean runs
+- poor action ordering is visibly punished
 
-Why it is easy:
+## Task Suite
 
-- single-step recovery
-- no telemetry noise
-- only transient control-plane flakiness
+The benchmark ships with three deterministic graded tasks.
 
-### 2. `memory_leak` (medium)
-
-Objective:
-Terminate the leaking worker process and then restart `auth-api`.
-
-Expected remediation:
-
-- `kill_process` on `auth-api`
-- `restart_service` on `auth-api`
-
-Why it is medium:
-
-- requires root-cause action before restart
-- mixes signal and noise in logs
-- transient flakiness can force retries
-
-### 3. `db_connection_exhaustion` (hard)
-
-Objective:
-Scale the degraded database before clearing stale connections.
-
-Expected remediation:
-
-- `scale_db` on `main-db`
-- `clear_connections` on `main-db`
-
-Why it is hard:
-
-- strict causal ordering
-- high telemetry noise
-- apparent service health can hide backend saturation
+| Task | Difficulty | Objective | Expected Sequence | Why It Is Non-Trivial | Max Steps |
+|---|---|---|---|---|---:|
+| `service_restart` | easy | Recover a crashed API | `restart_service(auth-api)` | transient control-plane flakiness can require retry | `5` |
+| `memory_leak` | medium | Terminate the leaking worker, then restart the API | `kill_process(auth-api)` -> `restart_service(auth-api)` | correct root-cause action must happen before restart | `10` |
+| `db_connection_exhaustion` | hard | Scale the database first, then clear stale connections | `scale_db(main-db)` -> `clear_connections(main-db)` | noisy telemetry, strict causal ordering, backend saturation hidden behind apparently healthy app pods | `15` |
 
 ## Graders
 
-Each task has a dedicated deterministic grader function:
+Each task has a dedicated programmatic grader:
 
 - `grade_service_restart`
 - `grade_memory_leak`
 - `grade_db_connection_exhaustion`
 
-All graders return a typed `TaskGrade` object with:
+All graders return a typed `TaskGrade` with:
 
-- `score` in `0.0–1.0`
+- `score` in `[0.0, 1.0]`
 - `resolved`
 - `steps_taken`
 - `progress_ratio`
@@ -197,60 +189,112 @@ All graders return a typed `TaskGrade` object with:
 - `completed_steps`
 - `notes`
 
-Scoring is deterministic and reproducible for a fixed seed. The final score is penalty-driven and based primarily on `env.cumulative_reward`, not on a large weighted success bonus.
+Scoring properties:
 
-Grading rules:
+- deterministic for a fixed code snapshot and seed
+- penalty-driven rather than inflated by a giant success constant
+- unresolved tasks are capped
+- successful but sloppy runs remain distinguishable from strong runs
 
-- final score is derived from `cumulative_reward` with a task-specific normalization factor
-- every `STEP_PENALTY` and `INCORRECT_ACTION_PENALTY` directly lowers the final grade
-- unresolved tasks are capped at `0.40`
-- resolved tasks retain visible score differences based on retries, diagnostics, and mistakes
-- the hard task is intentionally calibrated so a successful run with a few extra steps lands well below a perfect score
+## Robustness And Exploit Resistance
 
-This makes the hard task scientifically useful: a weak baseline can honestly score low, while stronger agents still have room to improve.
+The environment includes several protections that matter for benchmarking quality:
+
+- wrong-target actions do not receive progress credit
+- future-step actions attempted out of order are penalized
+- the same fixed seed reproduces flakiness patterns deterministically
+- `step()` after `done` returns `0.0` reward and reports `episode_already_done`
+- inspection actions provide information without letting agents farm reward
+
+These guardrails make the benchmark more reliable under agentic evaluation and reduce trivial exploit surfaces.
 
 ## Baseline Inference
 
-The required root-level script is [inference.py](/home/prateeksingh/Desktop/devops_responder/inference.py). It:
+The required root-level baseline script is [`inference.py`](inference.py).
 
-- uses the OpenAI Python client for all LLM calls
-- reads `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
-- uses an observation-driven prompting policy when model credentials are present
-- falls back to a deterministic heuristic policy only if no model credentials are present
-- runs all tasks with a fixed default seed
+It:
 
-The primary benchmark path is observation-driven and uses the OpenAI client with the configured model. The fallback path is a deterministic, task-aware heuristic so local validation can still complete without external model access.
+- uses the OpenAI Python client for all model calls
+- reads the required hackathon variables `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
+- also accepts `OPENAI_API_KEY` as a local compatibility fallback
+- can run against a local server or an already deployed runtime via `DEVOPS_ENV_BASE_URL`
+- emits the required `[START]`, `[STEP]`, and `[END]` structured stdout lines
 
-Required environment variables:
+Primary environment variables:
 
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
+```bash
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="openai/gpt-oss-120b:groq"
+export HF_TOKEN="<your-token>"
+```
 
 Optional environment variables:
 
-- `DEVOPS_ENV_BASE_URL`
-- `BASELINE_SEED`
-- `OPENAI_API_KEY`
+```bash
+export DEVOPS_ENV_BASE_URL="https://tek-wizard-devops-incident-responder.hf.space"
+export BASELINE_SEED="8"
+export REQUEST_TIMEOUT_SECONDS="15"
+export MAX_STEPS="20"
+```
 
-## Baseline Scores
+## Reference Baselines
 
-Two baseline modes are available:
+Scores are deterministic for a fixed code snapshot, runtime, seed, and model configuration.
 
-- LLM baseline: observation-driven policy using the OpenAI client and the configured model
-- fallback baseline: deterministic heuristic policy used only when no API credentials are set
+### Local Reference Run
 
-Documented reproducible baseline with `BASELINE_SEED=7`:
+Command:
 
-| Task | Score |
-|---|---:|
-| `service_restart` | `0.850` |
-| `memory_leak` | `0.933` |
-| `db_connection_exhaustion` | `0.700` |
+```bash
+export BASELINE_SEED="8"
+python3 inference.py
+```
 
-These results come from the deterministic fallback policy and are reproducible for the same seed. When `HF_TOKEN` is set, the script still uses the OpenAI client for the primary evaluation path.
+Observed output with `MODEL_NAME="openai/gpt-oss-120b:groq"`:
 
-The hard task remains intentionally non-perfect even under the deterministic policy, which helps preserve headroom for stronger agents.
+| Task | Score | Steps | Reward Trace |
+|---|---:|---:|---|
+| `service_restart` | `0.95` | `1` | `0.95` |
+| `memory_leak` | `0.77` | `3` | `-0.25,0.45,0.95` |
+| `db_connection_exhaustion` | `0.65` | `4` | `-0.05,0.45,-0.05,0.95` |
+
+### Deployed Space Reference Run
+
+Runtime URL:
+
+- `https://tek-wizard-devops-incident-responder.hf.space`
+
+Command:
+
+```bash
+export DEVOPS_ENV_BASE_URL="https://tek-wizard-devops-incident-responder.hf.space"
+export BASELINE_SEED="7"
+python3 inference.py
+```
+
+Observed output with `MODEL_NAME="openai/gpt-oss-120b:groq"`:
+
+| Task | Score | Steps | Reward Trace |
+|---|---:|---:|---|
+| `service_restart` | `0.85` | `3` | `-0.05,-0.05,0.95` |
+| `memory_leak` | `0.70` | `5` | `-0.25,-0.05,-0.05,0.45,0.95` |
+| `db_connection_exhaustion` | `0.40` | `6` | `-0.25,-0.05,-0.05,0.45,-0.25,0.95` |
+
+If the Space is redeployed from a newer commit, rerun the command above and refresh this table so the README always matches the currently live build.
+
+These published runs demonstrate that:
+
+- the easy task can sometimes resolve immediately if the remediation sticks
+- the medium and hard tasks remain meaningfully imperfect
+- flakiness and noisy telemetry create measurable headroom for stronger agents
+
+## Example Structured Output
+
+```text
+[START] task=service_restart env=devops-incident-responder model=openai/gpt-oss-120b:groq
+[STEP] step=1 action=restart_service(auth-api) reward=0.95 done=true error=null
+[END] success=true steps=1 score=0.95 rewards=0.95
+```
 
 ## Setup
 
@@ -271,15 +315,15 @@ docker build -t devops-incident-responder .
 docker run --rm -p 7860:7860 devops-incident-responder
 ```
 
-## Usage
+## API Usage
 
-### Reset an episode
+### Reset an Episode
 
 ```bash
 curl -X POST "http://localhost:7860/reset?task_id=memory_leak&seed=7"
 ```
 
-### Take a step
+### Take a Step
 
 ```bash
 curl -X POST "http://localhost:7860/step" \
@@ -287,41 +331,41 @@ curl -X POST "http://localhost:7860/step" \
   -d '{"command":"kill_process","target":"auth-api"}'
 ```
 
-### Inspect state and grade
+### Inspect State And Grade
 
 ```bash
 curl "http://localhost:7860/state"
 curl "http://localhost:7860/grader"
+curl "http://localhost:7860/tasks"
 ```
 
-### Run the baseline
+## Hugging Face Space
 
-```bash
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="openai/gpt-oss-120b:groq"
-export HF_TOKEN="<your-token>"
-python3 inference.py
-```
+This repository is configured for a Docker-based Hugging Face Space and is tagged with `openenv` in the README frontmatter.
 
-To run the deterministic fallback policy without an LLM, omit `HF_TOKEN`.
+Use the runtime URL for validator pings:
 
-## Hugging Face Spaces
+- Space page: `https://huggingface.co/spaces/tek-wizard/devops-incident-responder`
+- runtime URL: `https://tek-wizard-devops-incident-responder.hf.space`
 
-This repository is designed for a Docker-based Hugging Face Space and the README frontmatter includes the `openenv` tag required by the hackathon.
+The validator checks the runtime URL, not the repository page URL.
 
-Use the Space runtime URL for validator pings, not the repository page URL. The validator expects a `https://<space-name>.hf.space` endpoint that responds to `POST /reset`.
+## Validation
 
-## Validation Checklist
-
-Before submission, verify:
+Recommended pre-submission flow:
 
 ```bash
 docker build -t devops-incident-responder .
-docker run --rm -p 7860:7860 devops-incident-responder
 python3 inference.py
 openenv validate
-./val.sh https://<your-space>.hf.space .
+./val.sh https://tek-wizard-devops-incident-responder.hf.space .
 ```
+
+The local validator script checks:
+
+- Space reachability and `POST /reset`
+- Docker build success
+- `openenv validate`
 
 ## Project Structure
 
@@ -332,6 +376,7 @@ openenv validate
 ├── openenv.yaml
 ├── README.md
 ├── requirements.txt
+├── val.sh
 ├── scripts/
 │   └── baseline.py
 └── server/
@@ -340,3 +385,15 @@ openenv validate
     ├── models.py
     └── tasks.py
 ```
+
+## Summary
+
+DevOps Incident Responder is a compact but practical benchmark for evaluating whether an agent can do real operational work:
+
+- diagnose incidents from noisy observability data
+- respect causal remediation order
+- recover service under transient failure
+- earn partial credit for meaningful progress
+- expose deterministic, typed graders for fair evaluation
+
+That combination makes it a strong fit for Round 1 and a useful benchmark for the broader agent-evaluation community.
