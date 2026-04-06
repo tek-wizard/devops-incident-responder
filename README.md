@@ -376,7 +376,6 @@ The local validator script checks:
 ├── openenv.yaml
 ├── README.md
 ├── requirements.txt
-├── val.sh
 ├── scripts/
 │   └── baseline.py
 └── server/

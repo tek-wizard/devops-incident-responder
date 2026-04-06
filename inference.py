@@ -11,6 +11,9 @@ from typing import Any
 import requests
 from openai import OpenAI
 
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "devops-incident-responder")
+IMAGE_NAME = os.getenv("IMAGE_NAME", LOCAL_IMAGE_NAME)
+
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 # MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-120b:groq")
