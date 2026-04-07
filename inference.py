@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import atexit
 import json
 import os
@@ -9,7 +11,14 @@ import time
 from typing import Any
 
 import requests
-from openai import OpenAI
+
+try:
+    from openai import OpenAI
+except Exception as exc:  # pragma: no cover - depends on runtime packaging
+    OpenAI = None  # type: ignore[assignment]
+    OPENAI_IMPORT_ERROR: Exception | None = exc
+else:
+    OPENAI_IMPORT_ERROR = None
 
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "devops-incident-responder")
 IMAGE_NAME = os.getenv("IMAGE_NAME", LOCAL_IMAGE_NAME)
@@ -47,10 +56,27 @@ def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> No
     )
 
 
+def log_warn(message: str) -> None:
+    print(f"[WARN] {message}", file=sys.stderr, flush=True)
+
+
 def _build_client() -> OpenAI | None:
+    if OPENAI_IMPORT_ERROR is not None:
+        log_warn(
+            f"OpenAI SDK import failed ({OPENAI_IMPORT_ERROR.__class__.__name__}: {OPENAI_IMPORT_ERROR}). "
+            "Falling back to heuristic policy."
+        )
+        return None
     if not API_KEY:
         return None
-    return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    try:
+        return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    except Exception as exc:
+        log_warn(
+            f"OpenAI client initialization failed ({exc.__class__.__name__}: {exc}). "
+            "Falling back to heuristic policy."
+        )
+        return None
 
 
 def _logs_contain(observation: dict[str, Any], needle: str) -> bool:
