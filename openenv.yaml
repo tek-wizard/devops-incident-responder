@@ -1,8 +1,12 @@
-name: "devops-incident-responder"
+spec_version: 1
+name: "ai-incident-commander"
 version: "1.0.0"
-description: "A real-world SRE simulator where agents diagnose and fix server outages."
+description: "A seeded incident-command environment where agents investigate telemetry, choose safe mitigations, and recover production services."
+runtime: "docker"
+app: "server/app.py:app"
+port: 7860
 entry_point: "server.app:app"
-tags: ["devops", "sre", "troubleshooting", "real-world"]
+tags: ["devops", "sre", "incident-response", "world-modeling", "real-world"]
 
 schema:
   action: "server.models:IncidentAction"
@@ -12,12 +16,21 @@ schema:
   grader: "server.models:TaskGrade"
 
 tasks:
-  - id: "service_restart"
+  - id: "bad_auth_deploy"
     difficulty: "easy"
-    description: "A critical API service has crashed and needs a restart."
-  - id: "memory_leak"
+    description: "Investigate an auth-api regression introduced by a fresh deploy and recover the login path safely."
+  - id: "worker_memory_leak"
     difficulty: "medium"
-    description: "Kill a leaking worker process and then restart auth-api to restore service."
-  - id: "db_connection_exhaustion"
+    description: "Contain a leaking worker, drain the resulting queue backlog, and restore downstream service health."
+  - id: "db_pool_exhaustion"
+    difficulty: "medium"
+    description: "Scale the degraded database first, then clear stale pooled connections to recover customer latency."
+  - id: "cache_flag_storm"
+    difficulty: "medium"
+    description: "Find the misconfigured feature flag that is crushing cache hit-rate and amplifying DB load."
+  - id: "queue_backlog_regression"
     difficulty: "hard"
-    description: "Scale the degraded database first, then clear stale connections to recover latency."
+    description: "Identify the billing deploy emitting poison messages, stop the producer regression, and drain the queue."
+  - id: "network_partition_failover"
+    difficulty: "hard"
+    description: "Confirm a zonal dependency partition before performing a risky database failover."

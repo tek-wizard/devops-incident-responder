@@ -36,6 +36,7 @@ wheels/
 .vscode/
 .idea/
 .DS_Store
+.codex
 
 # Compiled C++ (If you have local binaries)
 *.o

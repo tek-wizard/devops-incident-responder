@@ -1,18 +1,21 @@
+from __future__ import annotations
+
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from .models import EnvironmentState, IncidentAction, RewardOutput, SystemObservation, TaskGrade
-from .environment import DevOpsEnv
-from .tasks import TASKS
-import uvicorn
+from .scenarios import DEFAULT_TASK_ID, TASKS
+from .seed_sets import SEED_SETS
+from .session_store import EnvSessionStore, SessionNotFoundError
 
-app = FastAPI(title="DevOps Incident Responder")
+app = FastAPI(title="AI Incident Commander")
+store = EnvSessionStore()
 
-env = DevOpsEnv()
 
 @app.get("/")
 async def root():
-    return {"message": "DevOps Incident Responder OpenEnv is running", "status": "200"}
+    return {"message": "AI Incident Commander OpenEnv is running", "status": "200"}
 
 
 @app.get("/health")
@@ -22,30 +25,48 @@ async def health():
 
 def _normalize_action(action: IncidentAction) -> IncidentAction:
     command_aliases = {
-        "restart_service": "restart",
-        "scale": "scale_db",
+        "restart": "restart_service",
+        "scale": "scale_service",
+        "get_logs": "query_logs",
+        "check_metrics": "get_metrics",
+    }
+    target_aliases = {
+        "system": "system",
+        "main-db": "main-db",
+        "db": "main-db",
     }
     normalized_command = command_aliases.get(action.command, action.command)
+    normalized_target = target_aliases.get(action.target, action.target)
     return IncidentAction(
+        session_id=action.session_id,
         command=normalized_command,
-        target=action.target,
+        target=normalized_target,
         params=action.params,
     )
 
 
+def _get_env(session_id: str | None = None):
+    try:
+        return store.get(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/reset")
-async def reset(task_id: str = "service_restart", seed: int | None = None):
-    """Resets the environment to a specific task state."""
+async def reset(task_id: str = DEFAULT_TASK_ID, seed: int | None = None, session_id: str | None = None):
     if task_id not in TASKS:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'")
-    observation = env.reset(task_id=task_id, seed=seed)
-    return observation
+    resolved_id, env = store.reset(task_id=task_id, seed=seed, session_id=session_id)
+    env.session_id = resolved_id
+    return env._get_obs()
+
 
 @app.post("/step")
-async def step(action: IncidentAction):
-    """Executes one action and returns the new observation and reward."""
-    normalized_action = _normalize_action(action)
-    observation, reward, done, info = env.step(normalized_action)
+async def step(action: dict):
+    raw_action = action.get("action", action)
+    normalized_action = _normalize_action(IncidentAction(**raw_action))
+    env = _get_env(normalized_action.session_id)
+    observation, reward, done, info = env.step_episode(normalized_action)
     return {
         "observation": observation,
         "reward": reward,
@@ -53,20 +74,24 @@ async def step(action: IncidentAction):
         "info": info,
     }
 
+
 @app.get("/tasks")
 async def get_tasks():
-    """MANDATORY: Returns list of tasks and the action schema."""
     return {
         "tasks": [
             {
                 "id": task["id"],
                 "name": task["name"],
                 "difficulty": task["difficulty"],
-                "noise_level": task["noise_level"],
-                "required_sequence": task["required_sequence"],
+                "description": task["description"],
+                "incident_brief": task["incident_brief"],
+                "max_steps": task["max_steps"],
+                "root_causes": task["root_causes"],
+                "relevant_evidence": task["relevant_evidence"],
             }
             for task in TASKS.values()
         ],
+        "seed_sets": SEED_SETS,
         "action_schema": IncidentAction.model_json_schema(),
         "observation_schema": SystemObservation.model_json_schema(),
         "reward_schema": RewardOutput.model_json_schema(),
@@ -74,29 +99,30 @@ async def get_tasks():
         "grader_schema": TaskGrade.model_json_schema(),
     }
 
+
 @app.get("/grader")
-async def get_grader():
-    """MANDATORY: Returns the final score (0.0-1.0) after an episode."""
+async def get_grader(session_id: str | None = None):
+    env = _get_env(session_id)
     return env.grade()
 
 
 @app.get("/state")
-async def get_state():
-    """Returns the current environment state for debugging and validation."""
-    return env.state
+async def get_state(session_id: str | None = None):
+    env = _get_env(session_id)
+    return env.public_state
 
 
 @app.post("/baseline")
 async def run_baseline():
-    """MANDATORY: Triggers the baseline inference script."""
     from scripts.baseline import run_all_tasks
 
     results = await run_in_threadpool(run_all_tasks)
     return {"results": results}
 
+
 def main():
-    """The entry point for the OpenEnv validator and deployment."""
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
+
 
 if __name__ == "__main__":
     main()
